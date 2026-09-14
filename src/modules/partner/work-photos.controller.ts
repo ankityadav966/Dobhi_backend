@@ -18,8 +18,7 @@
 
 import { Response } from 'express';
 import { AuthenticatedRequest } from '../../middlewares/auth.middleware';
-import { prisma } from '../../prisma.client';
-import { uploadToS3 } from '../../utils/s3';
+import { uploadToCloudinary } from '../../utils/cloudinary';
 import logger from '../../utils/logger';
 import { BookingStatus, WorkPhotoType } from '@prisma/client';
 
@@ -114,15 +113,15 @@ export const uploadBeforePhotos = async (
 
     // ── 4. Upload all files to S3 (in parallel) ───────────────────────────────
 
-    const s3Folder = `partner/${helper.id}/work-photos/${bookingId}/before`;
+    const folder = `dobhi/work-photos/helper_${helper.id}/${bookingId}/before`;
 
     const uploadResults = await Promise.all(
       files.map((file) =>
-        uploadToS3(file.buffer, file.mimetype, s3Folder)
+        uploadToCloudinary(file.buffer, { folder })
       )
     );
 
-    const photoUrls = uploadResults.map((r) => r.url);
+    const photoUrls = uploadResults.map((r) => r.secureUrl);
 
     // ── 5. Persist to DB inside a single transaction ──────────────────────────
 
@@ -258,13 +257,13 @@ export const uploadAfterPhotos = async (
 
     // ── 4. Upload all files to S3 (in parallel) ───────────────────────────
 
-    const s3Folder = `partner/${helper.id}/work-photos/${bookingId}/after`;
+    const folder = `dobhi/work-photos/helper_${helper.id}/${bookingId}/after`;
 
     const uploadResults = await Promise.all(
-      files.map((file) => uploadToS3(file.buffer, file.mimetype, s3Folder))
+      files.map((file) => uploadToCloudinary(file.buffer, { folder }))
     );
 
-    const photoUrls = uploadResults.map((r) => r.url);
+    const photoUrls = uploadResults.map((r) => r.secureUrl);
 
     // ── 5. Persist to DB inside a single transaction ────────────────────────
 

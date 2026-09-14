@@ -17,8 +17,11 @@ router.post('/register-helper', authMiddleware, validateHelperRegistration, vali
 // Update bank details
 router.put('/bank-details', authMiddleware, validateBankDetails, validate, userController.updateBankDetails);
 
+import multer from 'multer';
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
 // Upload profile photo
-router.post('/upload-photo', authMiddleware, userController.uploadProfilePhoto);
+router.post('/upload-photo', authMiddleware, upload.any(), userController.uploadProfilePhoto);
 
 // Upload KYC documents
 router.post('/upload-kyc', authMiddleware, userController.uploadKYCDocuments);

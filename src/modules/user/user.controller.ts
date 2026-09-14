@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { prisma } from '../../prisma.client';
 import logger from '../../utils/logger';
 import { AuthenticatedRequest } from '../../middlewares/auth.middleware';
+import { uploadToCloudinary, deleteFromCloudinary } from '../../utils/cloudinary';
 
 export const getUserProfile = async (req: AuthenticatedRequest, res: Response): Promise<any> => {
   try {
@@ -72,10 +73,29 @@ export const updateUserProfile = async (req: AuthenticatedRequest, res: Response
 export const uploadProfilePhoto = async (req: AuthenticatedRequest, res: Response): Promise<any> => {
   try {
     if (!req.user) return res.status(401).json({ success: false, message: 'Unauthorized' });
-    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+    const file = req.file || (req.files && Array.isArray(req.files) ? req.files[0] : null);
+    const bodyImage = req.body.image || req.body.avatar || req.body.imageUrl;
+    if (!file && !bodyImage) return res.status(400).json({ success: false, message: 'No file uploaded' });
 
     const userIdNum = parseInt(req.user.userId, 10);
-    const photoUrl = `/uploads/${req.file.filename}`;
+    const existing = await prisma.user.findUnique({ where: { id: userIdNum }, select: { avatar: true } });
+
+    let photoUrl = '';
+    if (file) {
+      const uploadResult = await uploadToCloudinary(file.buffer, { folder: `dobhi/users/user_${userIdNum}` });
+      photoUrl = uploadResult.secureUrl;
+    } else if (typeof bodyImage === 'string' && bodyImage.startsWith('data:image')) {
+      const uploadResult = await uploadToCloudinary(bodyImage, { folder: `dobhi/users/user_${userIdNum}` });
+      photoUrl = uploadResult.secureUrl;
+    } else {
+      photoUrl = bodyImage;
+    }
+
+    if (existing?.avatar && existing.avatar !== photoUrl) {
+      deleteFromCloudinary(existing.avatar).catch((err) => {
+        logger.warn('Failed to delete old avatar from Cloudinary:', { avatar: existing.avatar, error: err?.message });
+      });
+    }
 
     const user = await prisma.user.update({
       where: { id: userIdNum },
@@ -83,7 +103,15 @@ export const uploadProfilePhoto = async (req: AuthenticatedRequest, res: Respons
       select: { id: true, avatar: true },
     });
 
-    return res.json({ success: true, message: 'Profile photo uploaded successfully', data: user });
+    return res.json({
+      success: true,
+      message: 'Profile photo uploaded successfully',
+      data: {
+        id: user.id,
+        avatar: user.avatar,
+        image_url: user.avatar,
+      },
+    });
   } catch (error) {
     logger.error('Upload profile photo error:', error);
     return res.status(500).json({ success: false, message: 'Failed to upload profile photo' });

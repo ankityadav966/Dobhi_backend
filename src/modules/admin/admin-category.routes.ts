@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { prisma } from '../../prisma.client';
-import { uploadToS3 } from '../../utils/s3';
+import { uploadToCloudinary, deleteFromCloudinary } from '../../utils/cloudinary';
 import { sendNewCategoryNotificationToSellers } from '../../services/email.service';
 import logger from '../../utils/logger';
 
@@ -17,10 +17,10 @@ async function resolveImageUrl(req: Request): Promise<string | null> {
   if (req.files && Array.isArray(req.files) && req.files.length > 0) {
     const file = req.files[0];
     try {
-      const { url } = await uploadToS3(file.buffer, file.mimetype || 'image/jpeg', 'uploads');
-      return url;
+      const result = await uploadToCloudinary(file.buffer, { folder: 'dobhi/categories' });
+      return result.secureUrl;
     } catch (err: any) {
-      logger.warn('S3 upload fallback to base64 in admin categories:', err?.message || err);
+      logger.warn('Cloudinary upload fallback to base64 in admin categories:', err?.message || err);
       const mime = file.mimetype || 'image/jpeg';
       return `data:${mime};base64,${file.buffer.toString('base64')}`;
     }
@@ -306,6 +306,13 @@ router.put('/:id', async (req: Request, res: Response) => {
       }
     });
 
+    // If a new image was uploaded and there was an old Cloudinary image, delete the old one
+    if (imageUrl && existing.image && existing.image !== imageUrl) {
+      deleteFromCloudinary(existing.image).catch((err) => {
+        logger.warn('Failed to delete replaced category image from Cloudinary:', { image: existing.image, error: err?.message });
+      });
+    }
+
     return res.json({
       success: true,
       message: 'Category updated successfully',
@@ -336,7 +343,7 @@ router.patch('/:id/toggle-status', async (req: Request, res: Response) => {
 
     return res.json({
       success: true,
-      message: `Category is now ${updated.isActive ? 'Active' : 'Inactive'}`,
+      message: `Category ${updated.isActive ? 'activated' : 'deactivated'} successfully`,
       data: updated,
     });
   } catch (err: any) {
@@ -352,6 +359,11 @@ router.delete('/:id', async (req: Request, res: Response) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id) || id <= 0) {
       return res.status(400).json({ success: false, message: 'Invalid category ID' });
+    }
+
+    const existing = await prisma.platformCategory.findUnique({ where: { id } });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
     }
 
     // Safety check: Check if sellers or orders are linked
@@ -373,6 +385,13 @@ router.delete('/:id', async (req: Request, res: Response) => {
     }
 
     await prisma.platformCategory.delete({ where: { id } });
+
+    // Clean up Cloudinary asset
+    if (existing.image) {
+      deleteFromCloudinary(existing.image).catch((err) => {
+        logger.warn('Failed to delete category image from Cloudinary on delete:', { image: existing.image, error: err?.message });
+      });
+    }
 
     return res.json({
       success: true,

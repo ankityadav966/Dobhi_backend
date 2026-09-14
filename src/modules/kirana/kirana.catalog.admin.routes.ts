@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { prisma } from '../../prisma.client';
 import logger from '../../utils/logger';
-import { uploadToS3 } from '../../utils/s3';
+import { uploadToCloudinary, deleteFromCloudinary } from '../../utils/cloudinary';
 
 export const categoryRouter = Router();
 export const inventoryRouter = Router();
@@ -15,14 +15,14 @@ const upload = multer({
 categoryRouter.use(upload.any());
 inventoryRouter.use(upload.any());
 
-async function resolveS3ImageUrl(files: any, fallbackUrl?: string | null): Promise<string | null> {
+async function resolveS3ImageUrl(files: any, fallbackUrl?: string | null, folder: string = 'dobhi/products'): Promise<string | null> {
   if (files && Array.isArray(files) && files.length > 0) {
     const f = files[0];
     try {
-      const { url } = await uploadToS3(f.buffer, f.mimetype || 'image/jpeg', 'uploads');
-      return url;
+      const result = await uploadToCloudinary(f.buffer, { folder });
+      return result.secureUrl;
     } catch (err: any) {
-      logger.warn('S3 upload fallback in kirana catalog:', err?.message || err);
+      logger.warn('Cloudinary upload fallback in kirana catalog:', err?.message || err);
       return `data:${f.mimetype || 'image/jpeg'};base64,${f.buffer.toString('base64')}`;
     }
   }
@@ -145,6 +145,9 @@ categoryRouter.post('/', async (req: Request, res: Response) => {
 const updateCategoryHandler = async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id);
+    const existing = await prisma.kiranaCategory.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ success: false, message: 'Category not found' });
+
     const { name, slug, icon, image, tagline } = req.body;
     const updateData: any = {};
     if (name !== undefined) updateData.name = name;
@@ -152,7 +155,7 @@ const updateCategoryHandler = async (req: Request, res: Response) => {
     if (icon !== undefined) updateData.icon = icon;
 
     if (req.files && Array.isArray(req.files) && req.files.length > 0) {
-      updateData.image = await resolveS3ImageUrl(req.files);
+      updateData.image = await resolveS3ImageUrl(req.files, undefined, 'dobhi/categories');
     } else if (image || req.body.imageUrl) {
       updateData.image = image || req.body.imageUrl;
     }
@@ -162,6 +165,12 @@ const updateCategoryHandler = async (req: Request, res: Response) => {
       where: { id },
       data: updateData,
     });
+
+    if (updateData.image && existing.image && existing.image !== updateData.image) {
+      deleteFromCloudinary(existing.image).catch((delErr) => {
+        logger.warn('Failed to delete replaced kirana category image from Cloudinary:', { error: delErr?.message });
+      });
+    }
 
     return res.json({
       success: true,
@@ -181,7 +190,15 @@ categoryRouter.put('/:id', updateCategoryHandler);
 categoryRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id);
+    const existing = await prisma.kiranaCategory.findUnique({ where: { id } });
     await prisma.kiranaCategory.delete({ where: { id } });
+
+    if (existing?.image) {
+      deleteFromCloudinary(existing.image).catch((delErr) => {
+        logger.warn('Failed to delete kirana category image from Cloudinary on delete:', { error: delErr?.message });
+      });
+    }
+
     return res.json({ success: true, message: 'Category deleted' });
   } catch (error: any) {
     logger.error('Error deleting category:', error);
@@ -377,6 +394,9 @@ inventoryRouter.post('/', async (req: Request, res: Response) => {
 const updateProductHandler = async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id);
+    const existing = await prisma.kiranaProduct.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ success: false, message: 'Product not found' });
+
     const {
       name,
       slug,
@@ -397,7 +417,7 @@ const updateProductHandler = async (req: Request, res: Response) => {
     
     let imgValue = image || req.body.imageUrl;
     if (req.files && Array.isArray(req.files) && req.files.length > 0) {
-      imgValue = await resolveS3ImageUrl(req.files);
+      imgValue = await resolveS3ImageUrl(req.files, undefined, 'dobhi/products');
     }
 
     const updateData: any = {};
@@ -433,6 +453,12 @@ const updateProductHandler = async (req: Request, res: Response) => {
       }
     });
 
+    if (imgValue && existing.image && existing.image !== imgValue) {
+      deleteFromCloudinary(existing.image).catch((delErr) => {
+        logger.warn('Failed to delete replaced product image from Cloudinary:', { error: delErr?.message });
+      });
+    }
+
     const formatted = {
       ...updated,
       productId: `PRD${String(updated.id).padStart(3, '0')}`,
@@ -462,7 +488,15 @@ inventoryRouter.put('/:id', updateProductHandler);
 inventoryRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id);
+    const existing = await prisma.kiranaProduct.findUnique({ where: { id } });
     await prisma.kiranaProduct.delete({ where: { id } });
+
+    if (existing?.image) {
+      deleteFromCloudinary(existing.image).catch((delErr) => {
+        logger.warn('Failed to delete product image from Cloudinary on delete:', { error: delErr?.message });
+      });
+    }
+
     return res.json({ success: true, message: 'Product deleted' });
   } catch (error: any) {
     logger.error('Error deleting product:', error);

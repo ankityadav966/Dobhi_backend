@@ -22,7 +22,7 @@ import { Response } from 'express';
 import { prisma } from '../../prisma.client';
 import logger from '../../utils/logger';
 import { AuthenticatedRequest } from '../../middlewares/auth.middleware';
-import { uploadToS3 } from '../../utils/s3';
+import { uploadToCloudinary } from '../../utils/cloudinary';
 import { OnboardingStatus } from '@prisma/client';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -81,10 +81,9 @@ export const uploadSelfieImage = async (
 
     if (earlyExit(res, helper, !!req.user)) return;
 
-    const { url: s3Url } = await uploadToS3(
+    const { secureUrl: s3Url } = await uploadToCloudinary(
       req.file.buffer,
-      req.file.mimetype,
-      `partner/${helper!.id}/selfie`
+      { folder: `dobhi/kyc/helper_${helper!.id}/selfie` }
     );
 
     await prisma.helperKyc.upsert({
@@ -113,7 +112,7 @@ export const uploadSelfieImage = async (
  * POST /api/partner/kyc/upload-pan
  * Content-Type: multipart/form-data   field: "file"   (JPEG or PNG of PAN card)
  *
- * Uploads the PAN card image to S3 and stores the URL.
+ * Uploads the PAN card image to Cloudinary and stores the URL.
  * No OCR, no auto-verification — admin reviews the document manually.
  */
 export const uploadPanImage = async (
@@ -132,10 +131,9 @@ export const uploadPanImage = async (
 
     const helperId = helper!.id;
 
-    const { url: panS3Url } = await uploadToS3(
+    const { secureUrl: panS3Url } = await uploadToCloudinary(
       req.file.buffer,
-      req.file.mimetype,
-      `partner/${helperId}/pan`
+      { folder: `dobhi/kyc/helper_${helperId}/pan` }
     );
 
     await prisma.helperKyc.upsert({
@@ -187,11 +185,13 @@ export const uploadPoliceDoc = async (
 
     const helperId = helper!.id;
 
-    // ── Upload to S3 ──────────────────────────────────────────────────────────
-    const { url: s3Url } = await uploadToS3(
+    // ── Upload to Cloudinary ──────────────────────────────────────────────────
+    const { secureUrl: s3Url } = await uploadToCloudinary(
       req.file.buffer,
-      req.file.mimetype,
-      `partner/${helperId}/police`
+      {
+        folder: `dobhi/kyc/helper_${helperId}/police`,
+        resourceType: req.file.mimetype === 'application/pdf' ? 'auto' : 'image',
+      }
     );
 
     await prisma.helperKyc.update({
