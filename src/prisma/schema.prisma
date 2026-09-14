@@ -1,0 +1,1178 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ================= ENUMS =================
+
+enum BookingStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  EXPIRED
+  NO_SHOW
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  CREATED
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+}
+
+enum EscrowStatus {
+  PENDING
+  LOCKED
+  RELEASED
+  REFUNDED
+}
+
+enum OnboardingStatus {
+  PENDING_KYC
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+enum UserRole {
+  CUSTOMER
+  HELPER
+  ADMIN
+}
+
+enum DurationUnit {
+  HOUR
+  DAY
+  WEEK
+  MONTH
+}
+
+enum WorkPhotoType {
+  BEFORE
+  AFTER
+}
+
+enum LedgerType {
+  PAYMENT_CAPTURED
+  ESCROW_LOCK
+  COMMISSION_EARNED
+  HELPER_PAYOUT
+  REFUND_ISSUED
+  PAYOUT_REVERSAL
+}
+
+enum LedgerDirection {
+  CREDIT
+  DEBIT
+}
+
+// ================= USER =================
+
+model User {
+  id            Int       @id @default(autoincrement())
+  phone         String    @unique
+  email         String?   @unique
+  password      String?
+  fullName      String
+  avatar        String?
+  isActive      Boolean   @default(false)
+  role          UserRole  @default(CUSTOMER)
+  isBlocked     Boolean   @default(false)
+  blockedReason String?
+  suspendedUntil DateTime?  @db.Timestamptz(3)
+  address       String?
+  city          String?
+  pinCode       String?
+  latitude      Float?
+  longitude     Float?
+  createdAt     DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime   @updatedAt @db.Timestamptz(3)
+
+  helper        Helper?
+  bookings      Booking[]
+  ratings       Rating[]
+  panVerification PanVerification?
+  refreshTokens RefreshToken[]
+  deviceTokens  DeviceToken[]
+  notificationLogs NotificationLog[]
+  addresses     UserAddress[]
+}
+
+
+// ================= USER ADDRESS =================
+
+model UserAddress {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  label     String?
+  address   String
+  city      String
+  pinCode   String
+  latitude  Float
+  longitude Float
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ================= HELPER =================
+
+model Helper {
+  id              Int       @id @default(autoincrement())
+  userId          Int       @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  rating          Float     @default(0)
+  totalRatings    Int       @default(0)
+
+  isAvailable     Boolean   @default(false)
+  isOnline        Boolean   @default(false)
+
+  onboardingStatus  OnboardingStatus  @default(PENDING_KYC)
+
+  lastActiveAt    DateTime?  @db.Timestamptz(3)
+
+  // Payout registration
+  payoutEnabled        Boolean   @default(false)
+  payoutSetupStatus    String    @default("NOT_STARTED")
+  payoutRetryCount     Int       @default(0)
+  lastPayoutRetryAt    DateTime? @db.Timestamptz(3)
+
+  // Discipline
+  ignoreCount     Int       @default(0)
+  noShowCount     Int       @default(0)
+  cancelCount     Int       @default(0)
+  penaltyCount    Int       @default(0)
+  strikeCount     Int       @default(0)
+  lastStrikeAt    DateTime?  @db.Timestamptz(3)
+
+  // Fairness rotations for dispatch
+  lastJobAssignedAt DateTime?  @db.Timestamptz(3)
+
+  // Relations
+  helperServices      HelperService[]
+  profile             HelperProfile?
+  kyc                 HelperKyc?
+  bank                HelperBank?
+  availability        HelperAvailability?
+  bookings            Booking[] @relation("AssignedHelper")
+  reservedBookings    Booking[] @relation("ReservedHelper")
+  bookingRequests     BookingRequest[]
+  ratings             Rating[]
+  location            HelperLocation?
+  supportTickets      SupportTicket[]
+
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([userId])
+  @@index([onboardingStatus])
+  @@index([isAvailable])
+  @@index([isOnline])
+  @@index([payoutSetupStatus])
+}
+
+// ================= SERVICE =================
+
+model Service {
+  id        Int      @id @default(autoincrement())
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  helpers         HelperService[]
+  bookings        Booking[]
+  plans           ServicePlan[]
+  bookingRequests BookingRequest[]
+  coverages       ServiceCoverage[]
+}
+
+// ================= LOCATION =================
+
+model City {
+  id        Int      @id @default(autoincrement())
+  name      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  areas     Area[]
+}
+
+model Area {
+  id      Int    @id @default(autoincrement())
+  name    String
+  pincode String
+  cityId  Int
+
+  city      City              @relation(fields: [cityId], references: [id])
+  coverages ServiceCoverage[]
+
+  @@index([pincode])
+}
+
+model ServiceCoverage {
+  id        Int     @id @default(autoincrement())
+  serviceId Int
+  areaId    Int
+  isActive  Boolean @default(true)
+
+  service Service @relation(fields: [serviceId], references: [id])
+  area    Area    @relation(fields: [areaId], references: [id])
+
+  @@unique([serviceId, areaId])
+  @@index([areaId])
+}
+
+// ================= HELPER SERVICE (join table) =================
+
+model HelperService {
+  id        Int     @id @default(autoincrement())
+  helperId  Int
+  helper    Helper  @relation(fields: [helperId], references: [id], onDelete: Cascade)
+  serviceId Int
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([helperId, serviceId])
+  @@index([helperId])
+  @@index([serviceId])
+}
+
+// ================= HELPER PROFILE =================
+
+model HelperProfile {
+  id              Int       @id @default(autoincrement())
+  helperId        Int       @unique
+  helper          Helper    @relation(fields: [helperId], references: [id], onDelete: Cascade)
+
+  gender          String?
+  address         String?
+  city            String?
+  pinCode         String?
+  latitude        Float?
+  longitude       Float?
+  workType        String?   // FULL_TIME, PART_TIME, FREELANCE
+  experienceYears Int?
+
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([helperId])
+}
+
+// ================= HELPER KYC =================
+
+model HelperKyc {
+  id               Int       @id @default(autoincrement())
+  helperId         Int       @unique
+  helper           Helper    @relation(fields: [helperId], references: [id], onDelete: Cascade)
+
+  selfieUrl        String?
+  panUrl           String?
+  policeUrl        String?
+  panNumber        String?   @unique
+  isVerified       Boolean   @default(false)
+  verifiedAt       DateTime?  @db.Timestamptz(3)
+  rejectionReason  String?
+
+  // IDFY PAN verification fields
+  panNameFromApi     String?    // Name as returned by IDFY
+  nameMatchScore     Float?     // Similarity score 0-100
+  verificationStatus String?    // PENDING | IN_PROGRESS | VERIFIED | REVIEW | FAILED
+  idfyRequestId      String?    @unique
+  idfyRawResponse    Json?
+
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([helperId])
+  @@index([panNumber])
+  @@index([idfyRequestId])
+}
+
+// ================= HELPER BANK =================
+
+model HelperBank {
+  id            Int       @id @default(autoincrement())
+  helperId      Int       @unique
+  helper        Helper    @relation(fields: [helperId], references: [id], onDelete: Cascade)
+
+  accountName             String
+  accountNumber           String
+  ifsc                    String
+  bankName                String?   // e.g. "State Bank of India" — auto-fetched from IFSC API
+  branchName              String?   // e.g. "Andheri East" — auto-fetched from IFSC API
+  isVerified              Boolean   @default(false)
+  razorpayFundAccountId   String?   // RazorpayX fund_account_id for payouts (nullable, no unique constraint)
+
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([helperId])
+}
+
+// ================= HELPER LIVE LOCATION =================
+
+model HelperLocation {
+  id        Int      @id @default(autoincrement())
+  helperId  Int      @unique
+  helper    Helper   @relation(fields: [helperId], references: [id], onDelete: Cascade)
+
+  latitude  Float
+  longitude Float
+  heading   Float?
+  accuracy  Float?
+  speed     Float?
+
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([helperId])
+}
+
+// ================= HELPER AVAILABILITY =================
+
+model HelperAvailability {
+  id        Int       @id @default(autoincrement())
+  helperId  Int       @unique
+  helper    Helper    @relation(fields: [helperId], references: [id], onDelete: Cascade)
+
+  monday    Boolean   @default(false)
+  tuesday   Boolean   @default(false)
+  wednesday Boolean   @default(false)
+  thursday  Boolean   @default(false)
+  friday    Boolean   @default(false)
+  saturday  Boolean   @default(false)
+  sunday    Boolean   @default(false)
+
+  startTime String?   // HH:MM format
+  endTime   String?   // HH:MM format
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([helperId])
+}
+
+// ================= SERVICE PLAN =================
+
+model ServicePlan {
+  id            Int          @id @default(autoincrement())
+  serviceId     Int
+  name          String
+  price         Int
+  durationValue Int
+  durationUnit  DurationUnit
+  sortOrder     Int          @default(0)
+  isActive      Boolean      @default(true)
+
+  service         Service          @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  bookings        Booking[]
+  bookingRequests BookingRequest[]
+
+  @@index([serviceId])
+}
+
+// ================= BOOKING =================
+
+model Booking {
+  id               Int       @id @default(autoincrement())
+
+  customerId       Int
+  customer         User      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  serviceId        Int
+  service          Service   @relation(fields: [serviceId], references: [id])
+
+  servicePlanId    Int
+  servicePlan      ServicePlan @relation(fields: [servicePlanId], references: [id])
+
+  // Assigned helper
+  helperId         Int?
+  helper           Helper?   @relation("AssignedHelper", fields: [helperId], references: [id], onDelete: SetNull)
+
+  // Reservation logic
+  reservedHelperId Int?
+  reservedHelper   Helper?   @relation("ReservedHelper", fields: [reservedHelperId], references: [id], onDelete: SetNull)
+  reservedAt       DateTime?  @db.Timestamptz(3)
+
+  bookingDate      DateTime   @db.Timestamptz(3)
+  startTime        DateTime?  @db.Timestamptz(3)
+  endTime          DateTime?  @db.Timestamptz(3)
+  duration         Int
+  totalHours       Int?
+
+  paymentExpiresAt DateTime?  @db.Timestamptz(3)
+
+  status           BookingStatus @default(PENDING_PAYMENT)
+
+  location         String
+  address          String?
+  city             String?
+  pinCode          String?
+  latitude         Float?
+  longitude        Float?
+
+  notes            String?
+  specialRequirements String?
+
+  startOtp         String?
+  otpGeneratedAt   DateTime?  @db.Timestamptz(3)
+  otpAttempts      Int        @default(0)
+  startedAt        DateTime?  @db.Timestamptz(3)
+  endedAt          DateTime?  @db.Timestamptz(3)
+  completedAt      DateTime?  @db.Timestamptz(3)
+
+  // Job timer — set after before-photos are uploaded
+  jobTimerStarted  Boolean    @default(false)
+  jobStartedAt     DateTime?  @db.Timestamptz(3)
+
+  cancelReason     String?
+  cancelledBy      String?    // CUSTOMER, HELPER, or SYSTEM
+
+  // Refund tracking
+  refundAmount     Float?
+  refundedAt       DateTime?  @db.Timestamptz(3)
+
+  // Financial
+  totalAmount      Float
+  platformFee      Float   @default(0)
+  tax              Float   @default(0)
+  finalAmount      Float
+
+  payoutStatus     PayoutStatus @default(PENDING)
+  payoutEligibleAt DateTime?  @db.Timestamptz(3)
+  payoutId         String?
+  payoutAt         DateTime?  @db.Timestamptz(3)
+
+  // Retry tracking for transient RazorpayX payout failures
+  retryCount       Int       @default(0)
+  lastRetryAt      DateTime? @db.Timestamptz(3)
+  nextRetryAt      DateTime? @db.Timestamptz(3)
+
+  // Commission snapshot — frozen at booking completion time
+  // Ensures admin commission changes never affect already-completed bookings
+  commissionRateSnapshot     Float?
+  platformCommissionAmount   Float?
+  helperPayoutAmount         Float?
+
+  // Reference to booking request that created this booking
+  bookingRequestId String?   @unique
+
+  payment          Payment?
+  rating           Rating?
+  bookingRequests  BookingRequest[]
+  workPhotos       BookingWorkPhoto[]
+  issues           BookingIssue[]
+
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([status])
+  @@index([customerId])
+  @@index([helperId])
+  @@index([reservedHelperId])
+  @@index([paymentExpiresAt])
+  @@index([payoutStatus])
+  @@index([startedAt])
+}
+
+// ================= PAYMENT (ESCROW ENABLED) =================
+
+model Payment {
+  id            Int       @id @default(autoincrement())
+
+  bookingId     Int       @unique
+  booking       Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  amount        Float
+  status        PaymentStatus @default(CREATED)
+
+  transactionId String?   @unique
+  razorpayOrderId   String? @unique
+  razorpayPaymentId String? @unique
+
+  escrowStatus  EscrowStatus? @default(PENDING) // PENDING (pre-capture), LOCKED (held), RELEASED, REFUNDED
+  refundReason  String?
+
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([status])
+  @@index([escrowStatus])
+  @@index([bookingId])
+}
+
+
+
+
+// ================= BOOKING REQUEST =================
+
+model BookingRequest {
+  id                   Int      @id @default(autoincrement())
+
+  customerId           Int      // Customer who made the request
+
+  bookingId            Int?
+  booking              Booking?  @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  helperId             Int?
+  helper               Helper?  @relation(fields: [helperId], references: [id], onDelete: SetNull)
+
+  serviceId            Int
+  service              Service  @relation(fields: [serviceId], references: [id])
+
+  servicePlanId        Int
+  servicePlan          ServicePlan @relation(fields: [servicePlanId], references: [id])
+
+  // Category removed — dispatch matches by serviceId only
+
+  address              String
+  city                 String
+  pinCode              String
+  latitude             Float
+  longitude            Float
+
+  requestedDate        DateTime  @db.Timestamptz(3)
+  requestedTime        String?
+  estimatedHours       Int
+
+  description          String?
+  specialRequirements  String?
+  notes                String?
+
+  totalAmount          Float // Actual amount charged to the customer
+
+  // Dispatch and status management
+  status               String   @default("PENDING") // PENDING, ACCEPTED, REJECTED, CANCELLED, EXPIRED, FAILED
+  dispatchedHelperIds  Int[]    @default([]) // Array of IDs of helpers this was dispatched to
+  expiresAt            DateTime?  @db.Timestamptz(3)
+
+  respondedAt          DateTime?  @db.Timestamptz(3)
+  rejectionReason      String?
+  rejectedAt           DateTime?  @db.Timestamptz(3)
+
+  createdAt            DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([customerId])
+  @@index([serviceId])
+  @@index([helperId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+
+// ================= RATING =================
+
+model Rating {
+  id         Int      @id @default(autoincrement())
+
+  bookingId  Int      @unique
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  helperId   Int
+  helper     Helper   @relation(fields: [helperId], references: [id], onDelete: Cascade)
+
+  rating     Int
+  review     String?
+
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+}
+
+
+// ================= REFRESH TOKEN =================
+
+model RefreshToken {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  revoked    Boolean  @default(false)
+  expiresAt  DateTime @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  // Device / request context
+  deviceId   String?
+  ipAddress  String?
+  userAgent  String?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ================= OTP =================
+
+model Otp {
+  id        Int       @id @default(autoincrement())
+  phone     String
+  purpose   String    // "signup", "login"
+  expiresAt DateTime  @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([phone])
+  @@index([expiresAt])
+}
+
+// ================= PAN VERIFICATION =================
+
+model PanVerification {
+  id              Int     @id @default(autoincrement())
+  userId          Int     @unique
+  user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  panNumber       String  @unique
+  panName         String
+  isVerified      Boolean @default(false)
+  verificationId  String?
+
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("pan_verification")
+}
+
+// ================= OTP SECURITY =================
+
+model OtpSecurity {
+  id             Int       @id @default(autoincrement())
+  phone          String    @unique
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?  @db.Timestamptz(3)
+  lastSentAt     DateTime?  @db.Timestamptz(3)
+  resendCount    Int        @default(0)
+  resendResetAt  DateTime?  @db.Timestamptz(3)
+  createdAt      DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@index([phone])
+}
+
+// ================= AUTH AUDIT =================
+
+model AuthAudit {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  phone     String
+  event     String   // OTP_SENT, OTP_FAILED, OTP_VERIFIED, LOGIN_SUCCESS, TOKEN_REFRESH, LOGOUT, LOCKED_OUT
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([phone])
+  @@index([userId])
+  @@index([event])
+  @@index([createdAt])
+}
+
+// ================= PLATFORM SETTINGS =================
+
+model PlatformSetting {
+  id                     Int      @id @default(1)
+  commissionRate         Float    @default(0.20)  // 0.20 = 20%
+  maxBookingHours        Int?
+  minBookingHours        Int?
+  cancellationFeePercent Float?                   // 0–100
+  helperBookingGapHours  Int      @default(2)     // min gap between helper jobs
+  createdAt              DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime @updatedAt      @db.Timestamptz(3)
+}
+
+// ================= FINANCIAL LEDGER =================
+
+model LedgerEntry {
+  id          Int             @id @default(autoincrement())
+  bookingId   Int?
+  userId      Int?
+  type        LedgerType
+  direction   LedgerDirection
+  amount      Decimal         @db.Decimal(14,2)
+  referenceId String?
+  metadata    Json?
+  createdAt   DateTime        @default(now()) @db.Timestamptz(3)
+
+  // No FK relations — immutable audit log, immune to cascade deletes
+  // No updatedAt — entries are insert-only, never mutated
+
+  @@index([bookingId])
+  @@index([userId])
+  @@index([type])
+  @@index([createdAt])
+  @@unique([type, referenceId])
+}
+
+// ================= BOOKING WORK PHOTOS =================
+
+model BookingWorkPhoto {
+  id        Int           @id @default(autoincrement())
+  bookingId Int
+  booking   Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  photoUrl  String
+  type      WorkPhotoType
+  createdAt DateTime      @default(now()) @db.Timestamptz(3)
+
+  @@index([bookingId])
+  @@index([bookingId, type])
+}
+
+// ================= BOOKING ISSUES =================
+
+model BookingIssue {
+  id         Int       @id @default(autoincrement())
+  bookingId  Int
+  helperId   Int
+  reason     String
+  notes      String?
+
+  // Resolution tracking — set when admin cancels or resolves the booking
+  resolved   Boolean   @default(false)
+  resolvedAt DateTime? @db.Timestamptz(3)
+  resolvedBy String?   // 'ADMIN' | 'SYSTEM'
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+
+  booking    Booking   @relation(fields: [bookingId], references: [id])
+
+  @@index([bookingId])
+  @@index([helperId])
+  @@index([resolved])
+}
+
+// ================= DEVICE TOKENS =================
+
+model DeviceToken {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  token     String   @unique
+  platform  String   // ANDROID | IOS | WEB
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ================= NOTIFICATION LOG =================
+
+model NotificationLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  title     String
+  body      String
+  type      String
+  data      Json?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+  @@index([isRead])
+}
+
+// ================= SUPPORT TICKET =================
+
+model SupportTicket {
+  id        Int      @id @default(autoincrement())
+  helperId  Int
+  bookingId Int?
+  message   String
+  status    String   @default("OPEN") // OPEN | IN_PROGRESS | RESOLVED | CLOSED
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  helper    Helper   @relation(fields: [helperId], references: [id], onDelete: Cascade)
+
+  @@index([helperId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ================= SELLER & GROCERY / LAUNDRY CATALOG =================
+
+enum SellerStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+model Seller {
+  id                Int          @id @default(autoincrement())
+  businessName      String
+  ownerName         String
+  phone             String       @unique
+  email             String?      @unique
+  address           String
+  city              String
+  pincode           String
+  businessType      String       @default("grocery")
+  description       String?
+
+  gstin             String?
+  pan               String?
+  fssaiLicense      String?
+  documentUrl       String?
+  isVerified        Boolean      @default(false)
+  verificationNotes String?
+
+  logo              String?
+  banner            String?
+  openingTime       String       @default("07:00 AM")
+  closingTime       String       @default("10:00 PM")
+  deliveryRadiusKm  Float        @default(5.0)
+  minOrderValue     Float        @default(99.0)
+
+  latitude          Float?
+  longitude         Float?
+  dailyOrderLimit   Int          @default(10)
+  ordersToday       Int          @default(0)
+  lastOrderDate     DateTime?
+  subscriptionPlan  String       @default("FREE")
+  isPro             Boolean      @default(false)
+
+  status            SellerStatus @default(PENDING)
+  rejectionReason   String?
+  rating            Float        @default(4.8)
+  totalRatings      Int          @default(12)
+  isActive          Boolean      @default(true)
+
+  categoryId        Int?
+  category          PlatformCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  otp               String?
+  otpExpiresAt      DateTime?    @db.Timestamptz(3)
+  otpAttempts       Int          @default(0)
+
+  products          KiranaProduct[]
+  orders            SellerOrder[]
+  workers           SellerWorker[]
+
+  createdAt         DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@index([status])
+  @@index([city])
+  @@index([pincode])
+  @@index([businessType])
+  @@index([categoryId])
+}
+
+model KiranaCategory {
+  id          Int             @id @default(autoincrement())
+  name        String
+  slug        String          @unique
+  icon        String?         @default("Package")
+  image       String?
+  tagline     String?
+  sortOrder   Int             @default(0)
+  isActive    Boolean         @default(true)
+
+  products    KiranaProduct[]
+
+  createdAt   DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@index([slug])
+  @@index([isActive])
+}
+
+model KiranaProduct {
+  id                 Int             @id @default(autoincrement())
+  name               String
+  slug               String          @unique
+  brand              String?         @default("Generic")
+  categoryId         Int
+  category           KiranaCategory  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  sellerId           Int?
+  seller             Seller?         @relation(fields: [sellerId], references: [id], onDelete: SetNull)
+
+  unit               String          @default("1 unit")
+  pack               String?
+  originalPrice      Float
+  sellingPrice       Float
+  discountPercentage Float           @default(0)
+  stock              Int             @default(50)
+  inStock            Boolean         @default(true)
+  image              String?
+  isFeatured         Boolean         @default(false)
+  isBestseller       Boolean         @default(false)
+  rating             Float           @default(4.8)
+
+  createdAt          DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@index([categoryId])
+  @@index([sellerId])
+  @@index([slug])
+  @@index([isFeatured])
+  @@index([isBestseller])
+}
+
+model LaundryCatalogService {
+  id          Int      @id @default(autoincrement())
+  name        String
+  slug        String   @unique
+  description String?
+  icon        String?  @default("Sparkles")
+  image       String?
+  turnaround  String?  @default("24-48 Hours")
+  tagline     String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([slug])
+}
+
+model LaundryCatalogItem {
+  id        Int      @id @default(autoincrement())
+  name      String
+  category  String
+  gender    String?
+  icon      String?  @default("Shirt")
+  pricing   Json
+  isActive  Boolean  @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([category])
+}
+
+model SellerOrder {
+  id              Int      @id @default(autoincrement())
+  orderNumber     String   @unique
+  sellerId        Int
+  seller          Seller   @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  customerName    String
+  customerPhone   String
+  items           Json
+  totalAmount     Float
+  status          String   @default("Preparing")
+  orderType       String   @default("Grocery")
+  deliveryAddress   String?
+  customerLat       Float?
+  customerLng       Float?
+  storeLat          Float?
+  storeLng          Float?
+  dispatchRadiusKm  Float?   @default(3.0)
+  paymentMethod     String?  @default("ONLINE")
+  paymentStatus     String?  @default("PENDING")
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  razorpaySignature String?
+
+  assignedWorkerId     String?
+  customerEmail        String?
+  deliveryOtp          String?
+  deliveryOtpExpiresAt DateTime?  @db.Timestamptz(3)
+  deliveryOtpVerified  Boolean    @default(false)
+  deliveryOtpAttempts  Int        @default(0)
+  arrivedAt            DateTime?  @db.Timestamptz(3)
+
+  categoryId           Int?
+  category             PlatformCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([sellerId])
+  @@index([orderNumber])
+  @@index([status])
+  @@index([categoryId])
+  @@index([assignedWorkerId])
+}
+
+model Coupon {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  title           String?
+  description     String?
+  discountType    String   @default("PERCENT")
+  discountValue   Float
+  minOrderValue   Float?   @default(0)
+  maxDiscount     Float?
+  usageLimit      Int?
+  usedCount       Int      @default(0)
+  validFrom       DateTime? @db.Timestamptz(3)
+  validUntil      DateTime? @db.Timestamptz(3)
+  bgColor         String?  @default("#0B2239")
+  textColor       String?  @default("#ffffff")
+  isActive        Boolean  @default(true)
+  isFirstUserOnly Boolean  @default(false)
+  categoryId      Int?
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([code])
+  @@index([isActive])
+  @@index([categoryId])
+}
+
+model Dispute {
+  id              Int      @id @default(autoincrement())
+  ticketId        String   @unique
+  orderId         String?
+  type            String   @default("customer")
+  reportedBy      String
+  against         String?
+  issue           String
+  description     String
+  status          String   @default("open")
+  priority        String   @default("medium")
+  resolution      String?
+  refundStatus    String?
+  hasProof        Boolean  @default(false)
+  categoryId      Int?
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([ticketId])
+  @@index([status])
+  @@index([categoryId])
+}
+
+// ================= PLATFORM UPGRADE MODELS =================
+
+model PlatformCategory {
+  id          Int           @id @default(autoincrement())
+  name        String
+  slug        String        @unique
+  description String?
+  icon        String?       @default("Package")
+  image       String?
+  isActive    Boolean       @default(true)
+  sortOrder   Int           @default(0)
+  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime      @default(now()) @updatedAt @db.Timestamptz(3)
+
+  sellers       Seller[]
+  orders        SellerOrder[]
+  announcements PlatformAnnouncement[]
+
+  @@index([slug])
+  @@index([isActive])
+}
+
+model SellerWorker {
+  id                  Int       @id @default(autoincrement())
+  workerId            String    @unique
+  sellerId            Int
+  seller              Seller    @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  name                String
+  phone               String
+  email               String?
+  role                String    @default("Delivery Partner")
+  passcode            String?
+  otp                 String?
+  otpExpiresAt        DateTime? @db.Timestamptz(3)
+  otpAttempts         Int       @default(0)
+  isActive            Boolean   @default(true)
+  assignedOrdersCount Int       @default(0)
+  createdAt           DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+
+  @@index([workerId])
+  @@index([sellerId])
+  @@index([email])
+}
+
+model PlatformAnnouncement {
+  id          Int               @id @default(autoincrement())
+  title       String
+  description String
+  targetUsers String            @default("ALL_SELLERS")
+  categoryId  Int?
+  category    PlatformCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  emailSent   Boolean           @default(false)
+  createdAt   DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime          @default(now()) @updatedAt @db.Timestamptz(3)
+
+  @@index([createdAt])
+}
+
+model PlatformNotification {
+  id             Int       @id @default(autoincrement())
+  userId         Int?
+  recipientType  String    @default("SELLER")
+  recipientEmail String?
+  title          String
+  message        String
+  type           String    @default("GENERAL")
+  isRead         Boolean   @default(false)
+  metadata       Json?
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([recipientType, recipientEmail])
+}
+
+model PlatformOtp {
+  id         Int      @id @default(autoincrement())
+  email      String
+  code       String
+  purpose    String
+  expiresAt  DateTime @db.Timestamptz(3)
+  isVerified Boolean  @default(false)
+  attempts   Int      @default(0)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([email, purpose])
+}
+
+model FAQ {
+  id          Int      @id @default(autoincrement())
+  question    String
+  answer      String
+  categoryId  Int?
+  category    String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+
+  @@index([categoryId])
+  @@index([category])
+  @@index([isActive])
+}
+
+model ServiceCategory {
+  id                 Int      @id @default(autoincrement())
+  name               String
+  slug               String?
+  imageUrl           String?
+  platformCategoryId Int?
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+
+  @@index([platformCategoryId])
+  @@index([isActive])
+}
+
+
+

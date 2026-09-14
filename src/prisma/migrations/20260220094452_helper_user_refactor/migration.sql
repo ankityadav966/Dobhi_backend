@@ -1,0 +1,10 @@
+-- CreateEnum
+CREATE TYPE "OnboardingStatus" AS ENUM ('PENDING_PROFILE', 'PENDING_KYC', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED');
+
+-- AlterTable
+ALTER TABLE "Helper" ADD COLUMN     "onboardingStatus" "OnboardingStatus" NOT NULL DEFAULT 'PENDING_PROFILE',
+ALTER COLUMN "isAvailable" SET DEFAULT false;
+
+-- AlterTable
+ALTER TABLE "User" ALTER COLUMN "isActive" SET DEFAULT false,
+ALTER COLUMN "role" SET DEFAULT 'HELPER';
